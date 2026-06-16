@@ -544,7 +544,14 @@ def shard_command(args: argparse.Namespace) -> None:
     export_id = args.song_export_id
     if export_id == "latest":
         export_id = latest_export_id("song", token)
-    parts = export_parts(export_id, token)
+    parts_manifest = Path(args.parts_manifest) if args.parts_manifest else None
+    if parts_manifest and parts_manifest.exists():
+        parts = json.loads(parts_manifest.read_text(encoding="utf-8"))
+    else:
+        parts = export_parts(export_id, token)
+        if parts_manifest:
+            parts_manifest.parent.mkdir(parents=True, exist_ok=True)
+            parts_manifest.write_text(json.dumps(parts, ensure_ascii=False, indent=2), encoding="utf-8")
     selected = [
         part for part in parts
         if args.offset_start <= int(part["offset"]) <= args.offset_end
@@ -722,6 +729,7 @@ def parse_args() -> argparse.Namespace:
     shard.add_argument("--offset-end", type=int, required=True)
     shard.add_argument("--output", required=True)
     shard.add_argument("--seed-db", default="NeonTempo/SeedCatalog.sqlite")
+    shard.add_argument("--parts-manifest")
     shard.add_argument("--token-file", default="apple_music_developer_token.txt")
     shard.add_argument("--temp-dir")
     shard.add_argument("--storefront", action="append")
