@@ -1,0 +1,71 @@
+name: premium-v3-shards
+
+on:
+  workflow_dispatch:
+    inputs:
+      export_id:
+        description: Apple Music song export ID
+        required: true
+        default: song_2026-06-15T16-30
+      shard_set:
+        description: Matrix set label
+        required: true
+        default: all
+
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        range:
+          - { start: 0, end: 24, name: '000_024' }
+          - { start: 25, end: 49, name: '025_049' }
+          - { start: 50, end: 74, name: '050_074' }
+          - { start: 75, end: 99, name: '075_099' }
+          - { start: 100, end: 124, name: '100_124' }
+          - { start: 125, end: 149, name: '125_149' }
+          - { start: 150, end: 174, name: '150_174' }
+          - { start: 175, end: 199, name: '175_199' }
+          - { start: 200, end: 224, name: '200_224' }
+          - { start: 225, end: 249, name: '225_249' }
+          - { start: 250, end: 274, name: '250_274' }
+          - { start: 275, end: 299, name: '275_299' }
+          - { start: 300, end: 324, name: '300_324' }
+          - { start: 325, end: 349, name: '325_349' }
+          - { start: 350, end: 374, name: '350_374' }
+          - { start: 375, end: 399, name: '375_399' }
+          - { start: 400, end: 424, name: '400_424' }
+          - { start: 425, end: 449, name: '425_449' }
+          - { start: 450, end: 474, name: '450_474' }
+          - { start: 475, end: 499, name: '475_499' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyarrow
+      - name: Build shard
+        env:
+          APPLE_MUSIC_DEVELOPER_TOKEN: ${{ secrets.APPLE_MUSIC_DEVELOPER_TOKEN }}
+        run: |
+          mkdir -p out tmp
+          python tools/build_premium_catalog_v3.py shard \
+            --song-export-id "${{ inputs.export_id }}" \
+            --offset-start ${{ matrix.range.start }} \
+            --offset-end ${{ matrix.range.end }} \
+            --output "out/premium_v3_${{ matrix.range.name }}.sqlite" \
+            --seed-db SeedCatalog.sqlite \
+            --temp-dir tmp
+          sqlite3 "out/premium_v3_${{ matrix.range.name }}.sqlite" "select count(*) tracks from tracks; select count(*) storefronts from track_storefronts;"
+      - name: Upload shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: premium-v3-${{ matrix.range.name }}
+          path: out/premium_v3_${{ matrix.range.name }}.sqlite
+          retention-days: 1
+          if-no-files-found: error
