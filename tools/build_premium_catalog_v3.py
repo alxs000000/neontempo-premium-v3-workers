@@ -424,6 +424,8 @@ def process_parquet_part(
     generated_at: str,
     drop_if_max_relevance_at_most: int,
     minimum_storefront_relevance: int,
+    progress_prefix: str = "",
+    progress_every_batches: int = 25,
 ) -> Counter[str]:
     stats: Counter[str] = Counter()
     storefront_set = set(storefronts)
@@ -433,7 +435,7 @@ def process_parquet_part(
     track_batch: list[tuple[Any, ...]] = []
     storefront_batch: list[tuple[Any, ...]] = []
 
-    for batch in parquet.iter_batches(batch_size=8_000, columns=columns):
+    for batch_index, batch in enumerate(parquet.iter_batches(batch_size=8_000, columns=columns), start=1):
         for row in batch.to_pylist():
             stats["raw"] += 1
             song_id = str(row.get("id") or "").strip()
@@ -526,6 +528,12 @@ def process_parquet_part(
                 insert_batches(connection, track_batch, storefront_batch)
                 track_batch.clear()
                 storefront_batch.clear()
+        if progress_prefix and batch_index % progress_every_batches == 0:
+            print(
+                f"{progress_prefix}: batches={batch_index} raw={stats['raw']} "
+                f"retainedTracks={stats['retained_tracks']} storefrontRows={stats['retained_storefront_rows']}",
+                flush=True,
+            )
 
     insert_batches(connection, track_batch, storefront_batch)
     return stats
@@ -556,10 +564,21 @@ def shard_command(args: argparse.Namespace) -> None:
     temp_root = Path(args.temp_dir) if args.temp_dir else None
     started = time.time()
     try:
-        connection.execute("BEGIN")
         for index, part in enumerate(selected, start=1):
             with tempfile.TemporaryDirectory(prefix="premium-v3-part-", dir=temp_root) as temporary_dir:
+                part_started = time.time()
+                print(
+                    f"shard {args.offset_start}-{args.offset_end}: start {index}/{len(selected)} "
+                    f"offset={part['offset']}",
+                    flush=True,
+                )
                 path = download_part(part, Path(temporary_dir))
+                print(
+                    f"shard {args.offset_start}-{args.offset_end}: downloaded offset={part['offset']} "
+                    f"bytes={path.stat().st_size}",
+                    flush=True,
+                )
+                connection.execute("BEGIN")
                 part_stats = process_parquet_part(
                     path=path,
                     connection=connection,
@@ -569,16 +588,18 @@ def shard_command(args: argparse.Namespace) -> None:
                     generated_at=generated_at,
                     drop_if_max_relevance_at_most=args.drop_if_max_relevance_at_most,
                     minimum_storefront_relevance=args.minimum_storefront_relevance,
+                    progress_prefix=f"shard {args.offset_start}-{args.offset_end} offset={part['offset']}",
                 )
+                connection.execute("COMMIT")
                 stats.update(part_stats)
-            if index == 1 or index % 5 == 0 or index == len(selected):
-                print(
-                    f"shard {args.offset_start}-{args.offset_end}: {index}/{len(selected)} "
-                    f"offset={part['offset']} retainedTracks={stats['retained_tracks']} "
-                    f"storefrontRows={stats['retained_storefront_rows']} elapsed={time.time() - started:.1f}s",
-                    flush=True,
-                )
-        connection.execute("COMMIT")
+            print(
+                f"shard {args.offset_start}-{args.offset_end}: done {index}/{len(selected)} "
+                f"offset={part['offset']} partRetainedTracks={part_stats['retained_tracks']} "
+                f"totalRetainedTracks={stats['retained_tracks']} "
+                f"storefrontRows={stats['retained_storefront_rows']} "
+                f"partElapsed={time.time() - part_started:.1f}s elapsed={time.time() - started:.1f}s",
+                flush=True,
+            )
         connection.executescript(FINAL_INDEXES)
         metadata = {
             "premiumSchemaVersion": "3",
@@ -601,7 +622,10 @@ def shard_command(args: argparse.Namespace) -> None:
         connection.execute("ANALYZE")
         connection.execute("VACUUM")
     except Exception:
-        connection.execute("ROLLBACK")
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
         raise
     finally:
         connection.close()
