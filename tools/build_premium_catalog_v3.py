@@ -20,6 +20,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+import urllib.error
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -138,10 +139,20 @@ ON track_storefronts(track_id);
 """
 
 
-def request_json(url: str, token: str) -> dict[str, Any]:
+def request_json(url: str, token: str, attempts: int = 6) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        return json.loads(response.read().decode("utf-8"))
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            if error.code != 429 or attempt == attempts:
+                raise
+            retry_after = error.headers.get("Retry-After")
+            delay = int(retry_after) if retry_after and retry_after.isdigit() else min(300, 20 * attempt)
+            print(f"HTTP 429 from Apple Feed API; retrying in {delay}s ({attempt}/{attempts})", flush=True)
+            time.sleep(delay)
+    raise RuntimeError(f"Unable to fetch {url}")
 
 
 def latest_export_id(feed_name: str, token: str) -> str:
